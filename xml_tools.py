@@ -3,8 +3,13 @@
 """ tools for getting questions and tournaments from db.chgk.info
 """
 import json
-from urllib.request import urlopen, HTTPError
+import requests
+from urllib.request import urlopen
 from bs4 import BeautifulSoup
+import ssl
+
+# This restores the same behavior as before.
+CONTEXT = ssl._create_unverified_context()
 
 
 def neat(text):
@@ -16,24 +21,16 @@ def neat(text):
     :param text: input string
     :return: edited text
     """
-    text = text.replace('\n\n', '_zzz_')
-    text = text.replace('\n', ' ')
-    text = text.replace('_zzz_', '\n\n')
-    text = text.replace('[', '\[')
+    if isinstance(text, str):
+        # text = text.replace("\n\n", "_zzz_")
+        # text = text.replace("\n", " ")
+        # text = text.replace("_zzz_", "\n\n")
+        # text = text.replace("[", "\[")
+        text = text.replace("_", "\_")
+        text = text.replace("*", "\*")
+        text = text.replace("<i>", "_")
+        text = text.replace("</i>", "_")
     return text
-
-
-def strip_tags(tagged_text):
-    """
-    function that uses MLStripper and strips all HTML tags from text
-    :param tagged_text: tag from BeautifulSoup object
-    :return: edited text without any HTML tags in it
-    """
-    if '&' in tagged_text.text or '<' in tagged_text.text:
-        soup = BeautifulSoup(tagged_text.text, 'lxml')
-        return soup.text
-    else:
-        return tagged_text.text
 
 
 def recent_tournaments():
@@ -41,78 +38,62 @@ def recent_tournaments():
     list of recent tournaments
     :return: list of recent tournaments
     """
-    recent_url = urlopen("http://db.chgk.info/last/feed")
-    soup = BeautifulSoup(recent_url, 'lxml-xml')
+    recent_url = urlopen("http://db.chgk.info/last/feed", context=CONTEXT)
+    soup = BeautifulSoup(recent_url, "lxml-xml")
     tournaments = []
-    for item in soup.find_all('item'):
-        tournaments.append({'title': item.title.text,
-                            'link': item.link.text})
+    for item in soup.find_all("item"):
+        tournaments.append({"title": item.title.text, "link": item.link.text})
     return tournaments
 
 
-def tournament_info(url):
+def tournament_info(tournament_url):
     """
     get tournament info by it's url
-    :param url: url of tournament in db.chgk.info
+    :param tournament_url: url of tournament in db.chgk.info
     :return: dict with info about this tournament: description, number of
     tours, number of questions, editors, etc.
     """
-    url += '/xml'
-    try:
-        tournament_url = urlopen(url)
-    except HTTPError:
-        return ''
-    tournament = BeautifulSoup(tournament_url, 'lxml-xml')
-    tournament_url.close()
+    url = f"http://api.baza-voprosov.ru/packages/{tournament_url}"
+    response = requests.get(url, headers={"accept": "application/json"}).json()
+    if response['title'] == "An error occured":
+        return
     result = dict()
-    result['title'] = neat(tournament.Title.text)
-    description = '\n' + neat(tournament.PlayedAt.text)
-    if tournament.Editors.text:
-        description += '\n' + u'Редакторы: ' + tournament.Editors.text
-    if tournament.Info.text:
-        description += '\n' + neat(tournament.Info.text)
-    result['description'] = description
-    result['n_tours'] = int(tournament.ChildrenNum.text)
-    result['n_questions'] = [int(item.QuestionsNum.text) for item in
-                             tournament.find_all('tour')] if tournament.find_all('tour') else [int(tournament.QuestionsNum.text)]
-    result['tour_titles'] = [item.Title.text for item in
-                             tournament.find_all('tour')] if tournament.find_all('tour') else [tournament.Title.text]
-    result['tour_info'] = [neat(item.Info.text) if item.Info != tournament.Info
-                           else '' for item in tournament.find_all('tour')] if tournament.find_all('tour') else [tournament.Info.text]
-    result['tour_editors'] = [item.Editors.text if
-                              item.Editors != tournament.Editors else '' for
-                              item in tournament.find_all('tour')] if tournament.find_all('tour') else [tournament.Editors.text]
-    return result
-
-
-def q_and_a(tournament_url, tour, question):
-    """
-    get all necessary info about the question: text, handouts (if present),
-    answer, comments, author, sources.
-    :param tournament_url: tournament url
-    :param tour: tour number
-    :param question: question number
-    :return: dict with info about the question
-    """
-    url = 'http://db.chgk.info/question/{}.{}/{}/xml'.format(
-        tournament_url.split('/')[-1], tour, question)
-    question_url = urlopen(url)
-    quest = BeautifulSoup(question_url, 'lxml-xml')
-    question_url.close()
-    result = dict()
-    result['question'] = neat(strip_tags(quest.Question))
-    imageurl = BeautifulSoup(quest.Question.text, 'lxml').img
-    if imageurl:
-        result['question_image'] = imageurl['src']
-    result['answer'] = neat(strip_tags(quest.Answer))
-    if quest.Comments:
-        result['comments'] = neat(strip_tags(quest.Comments))
-    if quest.PassCriteria:
-        result['pass_criteria'] = neat(strip_tags(quest.PassCriteria))
-    if quest.Sources:
-        result['sources'] = neat(strip_tags(quest.Sources))
-    if quest.Authors:
-        result['authors'] = strip_tags(quest.Authors)
+    result["title"] = response["title"]
+    if response.get("playedAt") is None:
+        response["playedAt"] = ""
+    description = "\n" + response["playedAt"]
+    if response["editors"]:
+        description += "\n" + "Редакторы: " + response["editors"]
+    if response["info"]:
+        description += "\n" + response["info"]
+    result["description"] = description
+    result["n_tours"] = len(response["tours"])
+    result["n_questions"] = (
+        [len(tour["questions"]) for tour in response["tours"]]
+        if "tours" in response
+        else [len(response["Questions"])]
+    )
+    result["question_ids"] = [
+        [question["id"] for question in tour["questions"]] for tour in response["tours"]
+    ]
+    result["tour_titles"] = (
+        [tour["title"] for tour in response["tours"]]
+        if "tours" in response
+        else response["title"]
+    )
+    result["tour_info"] = (
+        [tour["info"] for tour in response["tours"]]
+        if "tours" in response
+        else response["info"]
+    )
+    result["tour_editors"] = (
+        [
+            tour["editors"] if tour["editors"] != response["editors"] else ""
+            for tour in response["tours"]
+        ]
+        if "tours" in response
+        else [response["editors"]]
+    )
     return result
 
 
@@ -124,7 +105,7 @@ def export_tournaments():
     """
 
     tournaments = {}
-    url_template = 'http://db.chgk.info/tour/{}/xml'
+    url_template = "http://db.chgk.info/tour/{}/xml"
 
     def parse_dir(title=None):
         """
@@ -133,21 +114,26 @@ def export_tournaments():
         :return: заполненный словарь tournaments
         """
         if title:
-            soup = BeautifulSoup(urlopen(url_template.format(title)),
-                                 'lxml-xml')
+            soup = BeautifulSoup(
+                urlopen(url_template.format(title), context=CONTEXT), "lxml-xml"
+            )
         else:
-            soup = BeautifulSoup(urlopen('http://db.chgk.info/tour/xml'),
-                                 'lxml-xml')
-        for tour in soup.findAll('tour'):
-            if tour.Type.text == 'Ч':
-                tournaments[tour.TextId.text] = {'title': tour.Title.text,
-                                                 'date': tour.PlayedAt.text}
-            elif tour.Type.text == 'Г':
+            soup = BeautifulSoup(
+                urlopen("http://db.chgk.info/tour/xml", context=CONTEXT), "lxml-xml"
+            )
+        for tour in soup.findAll("tour"):
+            if tour.Type.text == "Ч":
+                tournaments[tour.TextId.text] = {
+                    "title": tour.Title.text,
+                    "date": tour.PlayedAt.text,
+                }
+            elif tour.Type.text == "Г":
                 parse_dir(tour.TextId.text)
 
     parse_dir()
     return tournaments
 
+
 if __name__ == "__main__":
-    with open('tour_db.json', 'w') as f:
+    with open("tour_db.json", "w") as f:
         json.dump(export_tournaments(), f)
